@@ -1,0 +1,255 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  StreetSignal - Serverless Civic Issue Reporting Platform
+  AWS API Gateway HTTP API + AWS Lambda (Node.js 20) + Amazon DynamoDB (On-Demand) + Amazon S3
+
+Globals:
+  Function:
+    Timeout: 15
+    MemorySize: 256
+    Runtime: nodejs20.x
+    Architectures:
+      - x86_64
+    Environment:
+      Variables:
+        TABLE_NAME: !Ref ReportsTable
+        BUCKET_NAME: !Ref UploadsBucket
+        NODE_ENV: production
+
+Resources:
+  # ============================================================================
+  # HTTP API Gateway (v2) with Full CORS Configuration
+  # ============================================================================
+  StreetSignalHttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      Name: StreetSignal-HttpApi
+      CorsConfiguration:
+        AllowOrigins:
+          - '*'
+        AllowMethods:
+          - GET
+          - POST
+          - PATCH
+          - PUT
+          - DELETE
+          - OPTIONS
+        AllowHeaders:
+          - Content-Type
+          - Authorization
+          - X-Requested-With
+          - X-Api-Key
+        MaxAge: 600
+
+  # ============================================================================
+  # Amazon DynamoDB Table (On-Demand / Pay-Per-Request)
+  # ============================================================================
+  ReportsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: StreetSignal-Reports
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: reportId
+          AttributeType: S
+        - AttributeName: category
+          AttributeType: S
+        - AttributeName: status
+          AttributeType: S
+        - AttributeName: createdAt
+          AttributeType: S
+      KeySchema:
+        - AttributeName: reportId
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: CategoryCreatedIndex
+          KeySchema:
+            - AttributeName: category
+              KeyType: HASH
+            - AttributeName: createdAt
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        - IndexName: StatusCreatedIndex
+          KeySchema:
+            - AttributeName: status
+              KeyType: HASH
+            - AttributeName: createdAt
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+
+  # ============================================================================
+  # Amazon S3 Bucket for Photograph Uploads with CORS
+  # ============================================================================
+  UploadsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "streetsignal-uploads-${AWS::AccountId}-${AWS::Region}"
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders:
+              - '*'
+            AllowedMethods:
+              - GET
+              - PUT
+              - HEAD
+            AllowedOrigins:
+              - '*'
+            MaxAge: 3600
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        IgnorePublicAcls: true
+        BlockPublicPolicy: false
+        RestrictPublicBuckets: false
+
+  # S3 Bucket Policy allowing public read of uploaded civic photos
+  UploadsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref UploadsBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: PublicReadForUploadedImages
+            Effect: Allow
+            Principal: '*'
+            Action: 's3:GetObject'
+            Resource: !Sub "arn:aws:s3:::${UploadsBucket}/uploads/*"
+
+  # ============================================================================
+  # Lambda Functions (Least-Privilege IAM Policies)
+  # ============================================================================
+
+  # 1. POST /reports - Create Report
+  CreateReportFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: backend/
+      Handler: src/handlers/createReport.handler
+      Description: Validates and saves a new civic issue report in DynamoDB
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ReportsTable
+      Events:
+        CreateReport:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref StreetSignalHttpApi
+            Path: /reports
+            Method: post
+
+  # 2. GET /reports - List Reports
+  GetReportsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: backend/
+      Handler: src/handlers/getReports.handler
+      Description: Retrieves paginated and filtered list of civic issue reports
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref ReportsTable
+      Events:
+        GetReports:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref StreetSignalHttpApi
+            Path: /reports
+            Method: get
+
+  # 3. GET /reports/{id} - Retrieve Report by ID
+  GetReportByIdFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: backend/
+      Handler: src/handlers/getReportById.handler
+      Description: Retrieves single report by unique reference ID
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref ReportsTable
+      Events:
+        GetReportById:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref StreetSignalHttpApi
+            Path: /reports/{id}
+            Method: get
+
+  # 4. GET /analytics - Analytics Summary
+  GetAnalyticsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: backend/
+      Handler: src/handlers/getAnalytics.handler
+      Description: Calculates report counts, category distribution, and locality metrics
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref ReportsTable
+      Events:
+        GetAnalytics:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref StreetSignalHttpApi
+            Path: /analytics
+            Method: get
+
+  # 5. POST /uploads/presign - Presigned S3 Upload URL
+  GetPresignedUrlFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: backend/
+      Handler: src/handlers/getPresignedUrl.handler
+      Description: Generates an authenticated presigned URL for direct S3 photo upload
+      Policies:
+        - S3CrudPolicy:
+            BucketName: !Sub "streetsignal-uploads-${AWS::AccountId}-${AWS::Region}"
+      Events:
+        GetPresignedUrl:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref StreetSignalHttpApi
+            Path: /uploads/presign
+            Method: post
+
+  # 6. PATCH /reports/{id}/status - Update Report Status
+  UpdateReportStatusFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: backend/
+      Handler: src/handlers/updateReportStatus.handler
+      Description: Updates report status and appends resolution timeline
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ReportsTable
+      Events:
+        UpdateStatus:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref StreetSignalHttpApi
+            Path: /reports/{id}/status
+            Method: patch
+
+# ============================================================================
+# CloudFormation Outputs
+# ============================================================================
+Outputs:
+  HttpApiUrl:
+    Description: HTTP API Gateway endpoint base URL for StreetSignal
+    Value: !Sub "https://${StreetSignalHttpApi}.execute-api.${AWS::Region}.amazonaws.com"
+    Export:
+      Name: StreetSignalHttpApiUrl
+
+  ReportsTableName:
+    Description: DynamoDB Table name for reports
+    Value: !Ref ReportsTable
+
+  UploadsBucketName:
+    Description: S3 Bucket name for photograph uploads
+    Value: !Ref UploadsBucket
+
+  AwsRegion:
+    Description: Deployed AWS Region
+    Value: !Ref "AWS::Region"

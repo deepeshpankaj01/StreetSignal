@@ -1,0 +1,25 @@
+{
+  "name": "streetsignal",
+  "version": "1.0.0",
+  "description": "StreetSignal - AWS Serverless Civic Issue Reporting Platform",
+  "private": true,
+  "scripts": {
+    "test": "cd backend && npm test",
+    "dev:backend": "cd backend && npm run dev",
+    "dev:frontend": "cd frontend && npm run dev",
+    "build:frontend": "cd frontend && npm install && npm run build",
+    "build": "cd frontend && npm install && npm run build"
+  },
+  "keywords": [
+    "aws",
+    "serverless",
+    "react",
+    "dynamodb",
+    "lambda",
+    "s3",
+    "civic-tech",
+    "vercel"
+  ],
+  "author": "StreetSignal Team",
+  "license": "MIT"
+}
